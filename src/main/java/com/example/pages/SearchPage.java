@@ -16,6 +16,7 @@ public class SearchPage extends BasePage {
     public void enterSearchTerm(String term) {
         driver.findElement(searchBox).clear();
         driver.findElement(searchBox).sendKeys(term);
+        driver.findElement(searchBox).sendKeys("term");
         }
 
     public void clickSearch() {

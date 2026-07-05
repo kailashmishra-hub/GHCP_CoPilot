@@ -22,6 +22,7 @@ public class LoginPage extends BasePage {
     }
 
     public void clickLogin() {
+
         driver.findElement(loginButton).click();
     }
 }

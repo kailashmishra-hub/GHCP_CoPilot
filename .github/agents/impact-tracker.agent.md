@@ -1,7 +1,7 @@
 ﻿# impact-tracker.agent.md
 
 name: impact-tracker
-description: Detects impacted scenarios in feature files when any class file changes.
+description: Detects impacted scenarios in feature files when any class file changes, and extracts their tags.
 prompts:
   - impactcheck:
       usage:
@@ -17,9 +17,17 @@ prompts:
                 - Extract only the impacted annotations
                 - Match against feature files
                 - Report impacted scenarios (only the impacted steps)
+        - After identifying all impacted scenarios, extract tags:
+            - For each impacted scenario, open its feature file
+            - Collect any tags (lines starting with @) directly above the scenario definition
+            - Format tags with proper indentation
+        - Write two separate formatted outputs:
+            - Write impacted scenarios (Feature > Scenario > Step) to runtime/impacted-scenarios.txt
+            - Write impacted tags (Feature > Scenario > Tag) to runtime/impacted-tags.txt
 response_format:
   - "Feature: <feature file>"
   - "  Scenario: <scenario name>"
   - "    Step: <step text>"
+  - "    Tag: <tagname>"
 output_style: multiline
-output_file: runtime/impacted-scenarios.txt
+output_file: runtime/impacted-scenarios.txt + runtime/impacted-tags.txt
