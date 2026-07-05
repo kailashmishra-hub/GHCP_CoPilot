@@ -1,0 +1,15 @@
+﻿Feature: src/test/resources/features/login.feature
+  Scenario: Successful login
+    Tag: @login_successfull
+
+  Scenario: Invalid login
+    Tag: @login_failed
+
+Feature: src/test/resources/features/search.feature
+  Scenario: Search for a valid product
+    Tag: @search_valid
+
+  Scenario: Search for an invalid product
+    Tag: @search_invali
+
+# Test edit
