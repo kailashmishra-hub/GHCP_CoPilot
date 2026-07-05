@@ -12,13 +12,13 @@ public class LoginPage extends BasePage {
         super(driver);
     }
 
-    public void enterUsername(String username) {
+    public void enterUsername(String username1) {
         System.out.println("Hello Hello");
-        driver.findElement(usernameField).sendKeys(username);
+        driver.findElement(usernameField).sendKeys(username1);
     }
 
-    public void enterPassword(String password1) {
-        driver.findElement(passwordField).sendKeys(password1);
+    public void enterPassword(String password) {
+        driver.findElement(passwordField).sendKeys(password);
     }
 
     public void clickLogin() {
