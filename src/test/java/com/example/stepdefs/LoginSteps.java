@@ -17,9 +17,9 @@ public class LoginSteps {
     }
 
     @When("I enter username {string} and password {string}")
-    public void i_enter_credentials(String username, String password) {
+    public void i_enter_credentials(String username, String password1) {
         loginPage.enterUsername(username);
-        loginPage.enterPassword(password);
+        loginPage.enterPassword(password1);
     }
 
     @And("I click login")
