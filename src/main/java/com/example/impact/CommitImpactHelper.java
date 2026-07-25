@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class CommitImpactHelper {
+    // Warn when only main Java classes change so the impact-tracker can be run.
     public static void main(String[] args) throws Exception {
         List<String> changedFiles = getStagedFiles();
         if (changedFiles.isEmpty()) {
