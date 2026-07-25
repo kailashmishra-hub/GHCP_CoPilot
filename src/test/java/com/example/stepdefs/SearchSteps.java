@@ -16,7 +16,7 @@ public class SearchSteps {
         driver = new ChromeDriver();
         driver.get("https://example.com/home");
         searchPage = new SearchPage(driver);
-        loginPage.enterPassword("password");
+        loginPage.enterPassword("password1");
     }
 
     @When("I search for {string}")
