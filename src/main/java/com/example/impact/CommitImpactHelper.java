@@ -15,8 +15,7 @@ public class CommitImpactHelper {
             return;
         }
 
-        boolean onlyJavaFiles = changedFiles.stream()
-                .allMatch(path -> path.endsWith(".java"));
+        boolean hasJavaChanges = changedFiles.stream().anyMatch(path -> path.endsWith(".java"));
 
         boolean hasFeatureOrStepChanges = changedFiles.stream().anyMatch(path ->
                 path.startsWith("src/test/resources/features/")
@@ -25,7 +24,7 @@ public class CommitImpactHelper {
                         || path.endsWith("Steps.java")
                         || path.endsWith("Hooks.java"));
 
-        if (onlyJavaFiles && !hasFeatureOrStepChanges) {
+        if (hasJavaChanges && !hasFeatureOrStepChanges) {
             System.out.println("⚠️ Java source changes detected. Run the impact-tracker agent to inspect impacted Cucumber scenarios.");
         }
     }
