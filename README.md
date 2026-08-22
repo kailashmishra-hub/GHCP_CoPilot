@@ -1,5 +1,22 @@
 GHCP - Cucumber BDD Automation Framework (sample)
 
+Automatic pre-push impact analysis
+----------------------------------
+This repository includes a tracked Git pre-push hook and a GitHub Copilot custom
+agent. Enable the hook once in each clone:
+
+    git config core.hooksPath .githooks
+
+After that, every `git push` refreshes the default remote branch, compares the
+current branch with its merge base, writes `runtime/changed-class-files.txt`, and
+invokes the `impact-tracker` agent. The agent writes:
+
+- `runtime/impacted-scenarios.txt`
+- `runtime/impacted-tags.txt`
+
+Prerequisites are Git, JDK (`javac` and `java`), and an installed and authenticated
+GitHub Copilot CLI (`copilot`). If analysis fails, the push is cancelled.
+
 Purpose
 -------
 This repository (GHCP) contains a minimal Java project with a small sample application and unit test. The repository name and layout suggest it is intended as a Cucumber BDD automation framework, but the current source contains only a basic Maven Java app (org.example.App) and a JUnit 3 style test (AppTest).
