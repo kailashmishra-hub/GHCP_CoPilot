@@ -9,7 +9,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from impact_analyzer import Analysis, NoActivePullRequest, analyze, parse_github_pull_location, prepare_remote_pull_repository, risk_score, scenario_report, tag_report, validate_repo
+from impact_analyzer import Analysis, NoActivePullRequest, analyze, parse_github_pull_location, prepare_remote_pull_repository, risk_score, validate_repo
 
 
 st.set_page_config(page_title="GitHub Impact Tracker", page_icon="🔎", layout="wide")
@@ -22,19 +22,6 @@ STATUS_NAMES = {
     "R": "Renamed",
     "U": "Unmerged",
 }
-
-
-def choose_project_folder() -> str:
-    import tkinter as tk
-    from tkinter import filedialog
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    try:
-        return filedialog.askdirectory(title="Select automation project folder", mustexist=True)
-    finally:
-        root.destroy()
 
 
 def impact_rows(analysis: Analysis) -> list[dict[str, object]]:
@@ -161,25 +148,13 @@ def render_analysis(analysis: Analysis) -> None:
     st.subheader("1. Changed class files with feature impact")
     if impacting_classes:
         for item in impacting_classes:
-            related = [impact for impact in analysis.impacts if item.path in impact.changed_files]
             with st.expander(f"{STATUS_NAMES.get(item.status, item.status)} · {item.path}", expanded=True):
                 for change in item.code_changes:
                     st.markdown(f"**Method/Function:** `{change.method}`")
                     st.markdown(f"**Change Type:** {change.change_type}")
                     render_code_change_table(change)
-                scenario_names = [f"`{impact.scenario.name}` ({' '.join(impact.scenario.tags) or 'no tag'})" for impact in related]
-                st.markdown("**Potentially impacted functionality:** " + ", ".join(scenario_names))
     else:
         st.info("No changed class files could be traced to any feature scenario.")
-
-    st.subheader("2. Impacted feature scenarios, steps, and tags")
-    if analysis.impacts:
-        st.dataframe(impact_rows(analysis), use_container_width=True, hide_index=True)
-        left, right = st.columns(2)
-        left.download_button("Download impacted scenarios", scenario_report(analysis.impacts), "impacted-scenarios.txt")
-        right.download_button("Download impacted tags", tag_report(analysis.impacts), "impacted-tags.txt")
-    else:
-        st.info("No Cucumber scenarios could be traced to the changed source files.")
 
 def main() -> None:
     st.title("GitHub Impacted Scenarios Tracker")
@@ -196,23 +171,14 @@ def main() -> None:
         custom_base = ""
         pull_request_link = ""
         if source_mode == "Local repository":
-            if "selected_repo_path" not in st.session_state:
-                st.session_state.selected_repo_path = ""
-            if st.button("Browse project folder", use_container_width=True):
-                selected = choose_project_folder()
-                if selected:
-                    st.session_state.selected_repo_path = selected
-                    st.session_state.pop("analysis", None)
-                    st.session_state.pop("ai_review", None)
-            st.text_input(
-                "Selected folder",
-                value=st.session_state.selected_repo_path,
-                disabled=True,
-                placeholder="No folder selected",
+            selected_repo_path = st.text_input(
+                "Local Git repository path",
+                placeholder="C:\\path\\to\\your\\automation-project",
+                help="Paste the IntelliJ project root containing the .git folder.",
             )
-            if st.session_state.selected_repo_path:
+            if selected_repo_path:
                 try:
-                    repo_path = validate_repo(Path(st.session_state.selected_repo_path))
+                    repo_path = validate_repo(Path(selected_repo_path.strip().strip('"')))
                 except Exception as exc:
                     st.error(str(exc))
             st.text_input("Base branch", value="origin/main", disabled=True)
@@ -280,7 +246,7 @@ def main() -> None:
         st.success(f"Analyzing GitHub pull request #{st.session_state.pr_number} against origin/main.")
     render_analysis(analysis)
 
-    st.subheader("3. GitHub Copilot recommended regression subset")
+    st.subheader("2. GitHub Copilot recommended regression subset")
     st.caption("GitHub Copilot reviews only the traceable impacted scenarios and chooses the smallest risk-aware subset that covers the changed class behavior.")
     if not analysis.impacts:
         st.info("There are no impacted scenarios for AI to optimize.")
