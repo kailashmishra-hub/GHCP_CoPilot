@@ -40,3 +40,6 @@ build/
 
 # Generated locally by the pre-push impact tracker
 runtime/
+__pycache__/
+*.pyc
+*.log

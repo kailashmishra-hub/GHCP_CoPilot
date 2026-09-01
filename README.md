@@ -17,6 +17,35 @@ invokes the `impact-tracker` agent. The agent writes:
 Prerequisites are Git, JDK (`javac` and `java`), and an installed and authenticated
 GitHub Copilot CLI (`copilot`). If analysis fails, the push is cancelled.
 
+Streamlit impact dashboard
+--------------------------
+The dashboard compares any local Git repository with master/main, lists all file
+changes, traces Java/page-object and step-definition changes to Cucumber scenarios
+and tags, and selects a small regression subset using coverage optimization.
+
+    python -m pip install -r requirements.txt
+    streamlit run streamlit_app.py
+
+The deterministic recommendation works without an API key. For a GitHub Copilot
+risk review, install and authenticate GitHub Copilot CLI on the same computer:
+
+    npm install -g @github/copilot
+    copilot login
+
+Then start the dashboard. The app invokes Copilot locally in non-interactive mode;
+no OpenAI API key is required.
+
+GitHub Copilot PR automation
+----------------------------
+`.github/workflows/copilot-impact-tracker.yml` invokes the repository's
+`impact-tracker` custom agent whenever an in-repository pull request is opened or
+updated. Copilot analyzes the PR, selects a minimal tagged Cucumber subset, runs it
+with Maven, and publishes the console report and test artifacts in the workflow run.
+
+The repository or organization must allow Copilot CLI requests from GitHub Actions.
+Forked pull requests are intentionally excluded. No personal API key is required;
+the workflow uses the scoped `GITHUB_TOKEN` with read-only contents access.
+
 Purpose
 -------
 This repository (GHCP) contains a minimal Java project with a small sample application and unit test. The repository name and layout suggest it is intended as a Cucumber BDD automation framework, but the current source contains only a basic Maven Java app (org.example.App) and a JUnit 3 style test (AppTest).

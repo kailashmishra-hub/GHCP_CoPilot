@@ -1,0 +1,74 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from unittest.mock import patch
+
+from impact_analyzer import (
+    ChangedFile, Impact, Scenario, StepDefinition, cucumber_pattern,
+    discover_scenarios, impacted_definitions, minimal_subset, parse_github_pull_location,
+    parse_pull_request_url,
+)
+
+
+class ImpactAnalyzerTests(unittest.TestCase):
+    def test_cucumber_string_and_int_expressions(self):
+        self.assertTrue(cucumber_pattern("I search for {string}").fullmatch('I search for "Laptop"'))
+        self.assertTrue(cucumber_pattern("I enter {string} and {string}").fullmatch('I enter "user" and "password"'))
+        self.assertTrue(cucumber_pattern("I have {int} items").fullmatch("I have 12 items"))
+        self.assertFalse(cucumber_pattern("I have {int} items").fullmatch("I have many items"))
+
+    def test_parses_scenario_local_tags(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder)
+            feature = repo / "src/test/resources/cart.feature"
+            feature.parent.mkdir(parents=True)
+            feature.write_text("""@feature_tag
+Feature: Cart
+  @smoke @cart
+  Scenario: Add
+    Given I have 1 items
+""", encoding="utf-8")
+            scenarios = discover_scenarios(repo)
+            self.assertEqual(scenarios[0].tags, ["@smoke", "@cart"])
+
+    def test_minimal_subset_covers_all_units(self):
+        first = Impact(Scenario("a.feature", "Broad", 1), [], [], [], {"A", "B"})
+        second = Impact(Scenario("a.feature", "Narrow", 5), [], [], [], {"A"})
+        third = Impact(Scenario("b.feature", "Other", 1), [], [], [], {"C"})
+        selected, uncovered = minimal_subset([first, second, third])
+        self.assertEqual([item.scenario.name for item in selected], ["Broad", "Other"])
+        self.assertFalse(uncovered)
+
+    def test_changed_page_object_impacts_referencing_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder)
+            step_file = repo / "src/test/java/LoginSteps.java"
+            step_file.parent.mkdir(parents=True)
+            step_file.write_text("class LoginSteps { LoginPage loginPage; }", encoding="utf-8")
+            definition = StepDefinition(
+                "src/test/java/LoginSteps.java", "I sign in", 1, 1,
+                '@When("I sign in") void signIn() { loginPage.signIn(); }',
+            )
+            with patch("impact_analyzer.changed_line_numbers", return_value={1}):
+                links = impacted_definitions(
+                    repo, [ChangedFile("M", "src/main/java/LoginPage.java", True)],
+                    [definition], "base", "HEAD", True,
+                )
+            self.assertIn(definition, links)
+            self.assertIn("src/main/java/LoginPage.java", links[definition])
+
+    def test_parses_github_pull_request_url(self):
+        self.assertEqual(
+            parse_pull_request_url("https://github.com/kailashmishra-hub/GHCP/pull/1"),
+            ("kailashmishra-hub", "GHCP", 1),
+        )
+        self.assertIsNone(parse_pull_request_url("https://github.com/kailashmishra-hub/GHCP/pulls"))
+        self.assertEqual(
+            parse_github_pull_location("https://github.com/kailashmishra-hub/GHCP/pulls"),
+            ("kailashmishra-hub", "GHCP", None),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

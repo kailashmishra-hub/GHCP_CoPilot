@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import json
+import difflib
+import html
+import shutil
+import subprocess
+from pathlib import Path
+
+import streamlit as st
+
+from impact_analyzer import Analysis, NoActivePullRequest, analyze, parse_github_pull_location, prepare_remote_pull_repository, risk_score, scenario_report, tag_report, validate_repo
+
+
+st.set_page_config(page_title="GitHub Impact Tracker", page_icon="🔎", layout="wide")
+
+STATUS_NAMES = {
+    "A": "Added",
+    "C": "Copied",
+    "D": "Deleted",
+    "M": "Modified",
+    "R": "Renamed",
+    "U": "Unmerged",
+}
+
+
+def choose_project_folder() -> str:
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return filedialog.askdirectory(title="Select automation project folder", mustexist=True)
+    finally:
+        root.destroy()
+
+
+def impact_rows(analysis: Analysis) -> list[dict[str, object]]:
+    return [{
+        "Feature": impact.scenario.file,
+        "Scenario": impact.scenario.name,
+        "Tags": " ".join(impact.scenario.tags) or "—",
+        "Impacted steps": " | ".join(impact.impacted_steps),
+        "Changed classes": " | ".join(impact.changed_files),
+        "Reason": " | ".join(impact.reasons),
+    } for impact in analysis.impacts]
+
+
+def recommendation_rows(analysis: Analysis) -> list[dict[str, object]]:
+    return [{
+        "Priority": index,
+        "Scenario": impact.scenario.name,
+        "Feature": impact.scenario.file,
+        "Tags": " ".join(impact.scenario.tags) or "—",
+        "Coverage units": len(impact.coverage_units),
+        "Risk score": risk_score(impact),
+        "Why selected": "Covers " + ", ".join(impact.changed_files),
+    } for index, impact in enumerate(analysis.recommended, 1)]
+
+
+def highlighted_pair(before: str, after: str, before_changed: bool, after_changed: bool) -> tuple[str, str]:
+    if not before_changed and not after_changed:
+        return html.escape(before), html.escape(after)
+    if not before:
+        return "<span class='diff-absent'>(not present)</span>", f"<mark>{html.escape(after)}</mark>"
+    if not after:
+        return f"<mark>{html.escape(before)}</mark>", "<span class='diff-absent'>(removed)</span>"
+    before_parts: list[str] = []
+    after_parts: list[str] = []
+    for operation, a1, a2, b1, b2 in difflib.SequenceMatcher(None, before, after).get_opcodes():
+        before_text = html.escape(before[a1:a2])
+        after_text = html.escape(after[b1:b2])
+        if operation == "equal":
+            before_parts.append(before_text)
+            after_parts.append(after_text)
+        else:
+            if before_text:
+                before_parts.append(f"<mark>{before_text}</mark>")
+            if after_text:
+                after_parts.append(f"<mark>{after_text}</mark>")
+    return "".join(before_parts), "".join(after_parts)
+
+
+def render_code_change_table(change) -> None:
+    rows: list[str] = []
+    for row in change.rows:
+        before, after = highlighted_pair(row.before, row.after, row.before_changed, row.after_changed)
+        changed_class = " changed-row" if row.before_changed or row.after_changed else ""
+        rows.append(
+            f"<tr class='{changed_class}'><td><code>{before}</code></td>"
+            f"<td><code>{after}</code></td></tr>"
+        )
+    st.markdown(
+        """
+        <style>
+        .code-diff { width: 100%; border-collapse: collapse; table-layout: fixed; margin: .35rem 0 1rem; }
+        .code-diff th { text-align: left; padding: .55rem .7rem; border: 1px solid #d0d7de; background: #f6f8fa; }
+        .code-diff td { width: 50%; vertical-align: top; padding: .4rem .7rem; border: 1px solid #d8dee4; }
+        .code-diff code { white-space: pre-wrap; overflow-wrap: anywhere; color: inherit; background: transparent; }
+        .code-diff mark { background: #d0d0d0; color: #111; padding: 1px 0; }
+        .code-diff .diff-absent { color: #6e7781; font-style: italic; }
+        </style>
+        """
+        f"<table class='code-diff'><thead><tr><th>Master code</th><th>Committed code</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>",
+        unsafe_allow_html=True,
+    )
+
+
+def ai_recommendation(analysis: Analysis) -> str:
+    impacting_paths = sorted({path for impact in analysis.impacts for path in impact.changed_files})
+    facts = {
+        "changed_files_with_feature_impact": impacting_paths,
+        "impacted_scenarios": impact_rows(analysis),
+        "deterministic_minimal_subset": recommendation_rows(analysis),
+    }
+    copilot = shutil.which("copilot")
+    if not copilot:
+        raise RuntimeError(
+            "GitHub Copilot CLI was not found. Install it, restart the terminal, and run 'copilot login'."
+        )
+
+    prompt = (
+        "You are a senior test-impact analyst. Use only the supplied facts. Select the smallest "
+        "defensible scenario subset that covers every changed class and impacted step, prioritizing "
+        "higher regression risk when multiple equally small subsets exist. Never invent files, tags, "
+        "or scenarios. Return a concise Markdown table with Priority, Feature, Scenario, Tags, and "
+        "Coverage reason, followed by one sentence explaining why the subset is sufficient.\n\n"
+        f"Facts:\n{json.dumps(facts, indent=2)}"
+    )
+    try:
+        result = subprocess.run(
+            [copilot, "--prompt", prompt, "--no-color", "--no-ask-user"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("GitHub Copilot did not respond within 3 minutes.") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "Unknown Copilot CLI error."
+        raise RuntimeError(detail)
+    if not result.stdout.strip():
+        raise RuntimeError("GitHub Copilot returned an empty response.")
+    return result.stdout.strip()
+
+
+def render_analysis(analysis: Analysis) -> None:
+    st.caption(f"Comparison: `{analysis.base_ref}...{analysis.target_ref}` (merge base `{analysis.base_sha[:10]}`)")
+    impacting_paths = {path for impact in analysis.impacts for path in impact.changed_files}
+    impacting_classes = [item for item in analysis.changed_files if item.path in impacting_paths]
+    metrics = st.columns(2)
+    metrics[0].metric("Impacting class files", len(impacting_classes))
+    metrics[1].metric("Impacted scenarios", len(analysis.impacts))
+
+    st.subheader("1. Changed class files with feature impact")
+    if impacting_classes:
+        for item in impacting_classes:
+            related = [impact for impact in analysis.impacts if item.path in impact.changed_files]
+            with st.expander(f"{STATUS_NAMES.get(item.status, item.status)} · {item.path}", expanded=True):
+                for change in item.code_changes:
+                    st.markdown(f"**Method/Function:** `{change.method}`")
+                    st.markdown(f"**Change Type:** {change.change_type}")
+                    render_code_change_table(change)
+                scenario_names = [f"`{impact.scenario.name}` ({' '.join(impact.scenario.tags) or 'no tag'})" for impact in related]
+                st.markdown("**Potentially impacted functionality:** " + ", ".join(scenario_names))
+    else:
+        st.info("No changed class files could be traced to any feature scenario.")
+
+    st.subheader("2. Impacted feature scenarios, steps, and tags")
+    if analysis.impacts:
+        st.dataframe(impact_rows(analysis), use_container_width=True, hide_index=True)
+        left, right = st.columns(2)
+        left.download_button("Download impacted scenarios", scenario_report(analysis.impacts), "impacted-scenarios.txt")
+        right.download_button("Download impacted tags", tag_report(analysis.impacts), "impacted-tags.txt")
+    else:
+        st.info("No Cucumber scenarios could be traced to the changed source files.")
+
+def main() -> None:
+    st.title("GitHub Impacted Scenarios Tracker")
+    st.write("Compare a working branch with master/main, trace source changes into Cucumber scenarios, and choose a compact regression set.")
+
+    with st.sidebar:
+        st.header("Repository")
+        source_mode = st.radio(
+            "Choose analysis source",
+            ["Local repository", "GitHub PR link"],
+            horizontal=True,
+        )
+        repo_path: Path | None = None
+        custom_base = ""
+        pull_request_link = ""
+        if source_mode == "Local repository":
+            if "selected_repo_path" not in st.session_state:
+                st.session_state.selected_repo_path = ""
+            if st.button("Browse project folder", use_container_width=True):
+                selected = choose_project_folder()
+                if selected:
+                    st.session_state.selected_repo_path = selected
+                    st.session_state.pop("analysis", None)
+                    st.session_state.pop("ai_review", None)
+            st.text_input(
+                "Selected folder",
+                value=st.session_state.selected_repo_path,
+                disabled=True,
+                placeholder="No folder selected",
+            )
+            if st.session_state.selected_repo_path:
+                try:
+                    repo_path = validate_repo(Path(st.session_state.selected_repo_path))
+                except Exception as exc:
+                    st.error(str(exc))
+            st.text_input("Base branch", value="origin/main", disabled=True)
+            custom_base = st.text_input(
+                "Custom base ref/commit (optional)",
+                help="Leave empty for origin/main, or enter another branch, tag, SHA, or expression such as 798feaa^.",
+            )
+        else:
+            pull_request_link = st.text_input(
+                "GitHub pull request link",
+                placeholder="https://github.com/owner/repository/pull/1",
+                help="You can also enter the repository pull-request list URL ending in /pulls.",
+            )
+            st.text_input("Base branch", value="origin/main", disabled=True, key="pr_base_branch")
+        analyze_clicked = st.button("Analyze impact", type="primary", use_container_width=True)
+
+        st.divider()
+        st.header("GitHub Copilot")
+        if shutil.which("copilot"):
+            st.success("Copilot CLI detected")
+        else:
+            st.warning("Copilot CLI is not installed or is not on PATH.")
+            st.caption("Install it locally, restart the terminal, then run: copilot login")
+
+    if analyze_clicked:
+        try:
+            with st.spinner("Comparing Git changes and tracing Cucumber coverage..."):
+                if source_mode == "GitHub PR link":
+                    if not parse_github_pull_location(pull_request_link):
+                        st.error("Enter a valid GitHub PR link ending in /pull/NUMBER or /pulls.")
+                        return
+                    analysis_repo, pull_number, base_ref = prepare_remote_pull_repository(pull_request_link)
+                    target_ref = "HEAD"
+                    st.session_state.pr_number = pull_number
+                else:
+                    if repo_path is None:
+                        st.error("Select a local Git repository before running impact analysis.")
+                        return
+                    analysis_repo = repo_path
+                    base_ref = custom_base.strip() or "origin/main"
+                    target_ref = "HEAD"
+                    st.session_state.pop("pr_number", None)
+                st.session_state.analysis = analyze(analysis_repo, base_ref, target_ref, False)
+                st.session_state.analysis_source_mode = source_mode
+                st.session_state.pop("ai_review", None)
+        except NoActivePullRequest as exc:
+            st.session_state.pop("analysis", None)
+            st.session_state.pop("ai_review", None)
+            st.session_state.pop("pr_number", None)
+            st.info(str(exc))
+            return
+        except Exception as exc:
+            st.error(str(exc))
+            return
+
+    analysis = (
+        st.session_state.get("analysis")
+        if st.session_state.get("analysis_source_mode") == source_mode
+        else None
+    )
+    if not analysis:
+        st.info("Choose a repository and select **Analyze impact**.")
+        return
+    if st.session_state.get("pr_number"):
+        st.success(f"Analyzing GitHub pull request #{st.session_state.pr_number} against origin/main.")
+    render_analysis(analysis)
+
+    st.subheader("3. GitHub Copilot recommended regression subset")
+    st.caption("GitHub Copilot reviews only the traceable impacted scenarios and chooses the smallest risk-aware subset that covers the changed class behavior.")
+    if not analysis.impacts:
+        st.info("There are no impacted scenarios for AI to optimize.")
+        return
+    if st.button("Generate smallest subset with GitHub Copilot", type="primary"):
+        try:
+            with st.spinner("GitHub Copilot is selecting the smallest risk-aware regression subset..."):
+                st.session_state.ai_review = ai_recommendation(analysis)
+        except Exception as exc:
+            st.error(f"GitHub Copilot generation failed: {exc}")
+    if st.session_state.get("ai_review"):
+        st.markdown(st.session_state.ai_review)
+
+
+if __name__ == "__main__":
+    main()
