@@ -18,8 +18,8 @@ public class LoginPage extends BasePage {
         driver.findElement(usernameField).sendKeys("username2");
     }
 
-    public void enterPassword(String password) {
-        driver.findElement(passwordField).sendKeys(password);
+    public void enterPassword(String password2) {
+        driver.findElement(passwordField).sendKeys(password2);
     }
 
     public void clickLogin() {
