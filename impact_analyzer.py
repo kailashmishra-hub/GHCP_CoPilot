@@ -4,10 +4,11 @@ import re
 import subprocess
 import tempfile
 import json
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -115,7 +116,7 @@ def available_refs(repo: Path) -> list[str]:
 
 def default_base(repo: Path) -> str:
     refs = set(available_refs(repo))
-    for ref in ("origin/master", "master", "origin/main", "main"):
+    for ref in ("origin/main", "origin/master", "main", "master"):
         if ref in refs:
             return ref
     raise RuntimeError("No master/main ref found. Select a base ref explicitly.")
@@ -140,6 +141,26 @@ def parse_github_pull_location(value: str) -> tuple[str, str, int | None] | None
         return parts[0], parts[1], None
     specific = parse_pull_request_url(value)
     return specific if specific else None
+
+
+def parse_azure_pull_request_url(value: str) -> tuple[str, str, str, int] | None:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = parsed.netloc.lower()
+    parts = [part for part in parsed.path.split("/") if part]
+    if host == "dev.azure.com":
+        if len(parts) != 6 or parts[2].lower() != "_git" or parts[4].lower() != "pullrequest":
+            return None
+        organization, project, repository, number = parts[0], parts[1], parts[3], parts[5]
+    elif host.endswith(".visualstudio.com"):
+        if len(parts) != 5 or parts[1].lower() != "_git" or parts[3].lower() != "pullrequest":
+            return None
+        organization = host.removesuffix(".visualstudio.com")
+        project, repository, number = parts[0], parts[2], parts[4]
+    else:
+        return None
+    return tuple(map(unquote, (organization, project, repository))) + (int(number),) if number.isdigit() else None
 
 
 def _remote_repository(remote_url: str) -> tuple[str, str] | None:
@@ -181,6 +202,35 @@ def _github_api(path: str):
         raise RuntimeError(f"Unable to connect to the GitHub API: {exc.reason}") from exc
 
 
+def _azure_api(url: str, pat: str = ""):
+    headers = {"Accept": "application/json", "User-Agent": "GHCP-impact-tracker"}
+    if pat:
+        token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    request = Request(url, headers=headers)
+    try:
+        with urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        message = " Check the Azure DevOps PAT and its Code (Read) permission." if exc.code in {401, 403} else ""
+        raise RuntimeError(f"Azure DevOps API returned HTTP {exc.code}.{message}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Unable to connect to Azure DevOps: {exc.reason}") from exc
+
+
+def _azure_git(repo: Path | None, pat: str, *args: str) -> None:
+    command = ["git"]
+    if pat:
+        token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
+        command += ["-c", f"http.extraHeader=Authorization: Basic {token}"]
+    command += list(args)
+    completed = subprocess.run(
+        command, cwd=repo, text=True, encoding="utf-8", errors="replace", capture_output=True,
+    )
+    if completed.returncode:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "Azure Git operation failed.")
+
+
 def prepare_remote_pull_repository(pull_location_url: str) -> tuple[Path, int, str]:
     location = parse_github_pull_location(pull_location_url)
     if location is None:
@@ -215,6 +265,61 @@ def prepare_remote_pull_repository(pull_location_url: str) -> tuple[Path, int, s
             raise RuntimeError(completed.stderr.strip() or "Unable to clone the GitHub repository.")
     repo = validate_repo(destination)
     target_ref = fetch_pull_request(repo, f"https://github.com/{owner}/{repository}/pull/{number}")
+    run_git(repo, "checkout", "--detach", "--force", target_ref)
+    return repo, number, base_ref
+
+
+def prepare_azure_pull_repository(pull_request_url: str, pat: str = "") -> tuple[Path, int, str]:
+    parsed = parse_azure_pull_request_url(pull_request_url)
+    if parsed is None:
+        raise RuntimeError(
+            "Enter an Azure DevOps PR URL such as "
+            "https://dev.azure.com/organization/project/_git/repository/pullrequest/123."
+        )
+    organization, project, repository, number = parsed
+    encoded_project, encoded_repository = quote(project, safe=""), quote(repository, safe="")
+    api_url = (
+        f"https://dev.azure.com/{quote(organization, safe='')}/{encoded_project}/_apis/git/"
+        f"repositories/{encoded_repository}/pullrequests/{number}?api-version=7.1"
+    )
+    pull_data = _azure_api(api_url, pat)
+    status = str(pull_data.get("status", "")).lower()
+    if status == "completed":
+        raise NoActivePullRequest(
+            f"Azure DevOps pull request #{number} is already completed; there are no active PR differences to analyze."
+        )
+    if status != "active":
+        raise NoActivePullRequest(
+            f"Azure DevOps pull request #{number} is {status or 'not active'}; there are no active PR differences to analyze."
+        )
+
+    target_branch = str(pull_data.get("targetRefName", ""))
+    source_branch = str(pull_data.get("sourceRefName", ""))
+    if not target_branch.startswith("refs/heads/") or not source_branch.startswith("refs/heads/"):
+        raise RuntimeError("The Azure DevOps PR did not provide valid source and target branches.")
+    target_name = target_branch.removeprefix("refs/heads/")
+    base_ref = f"origin/{target_name}"
+
+    target_repository = pull_data.get("repository") or {}
+    remote_url = target_repository.get("remoteUrl") or (
+        f"https://dev.azure.com/{organization}/{encoded_project}/_git/{encoded_repository}"
+    )
+    fork_repository = ((pull_data.get("forkSource") or {}).get("repository") or {})
+    source_url = fork_repository.get("remoteUrl") or remote_url
+    destination = (
+        Path(tempfile.gettempdir()) / "ghcp-impact-azure-prs" /
+        f"{organization}-{project}-{repository}-pr-{number}"
+    )
+    if not (destination / ".git").is_dir():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _azure_git(None, pat, "clone", "--no-checkout", remote_url, str(destination))
+    repo = validate_repo(destination)
+    _azure_git(
+        repo, pat, "fetch", "--force", "origin",
+        f"+{target_branch}:refs/remotes/origin/{target_name}",
+    )
+    target_ref = f"refs/impact-tracker/azure-pull/{number}"
+    _azure_git(repo, pat, "fetch", "--force", source_url, f"+{source_branch}:{target_ref}")
     run_git(repo, "checkout", "--detach", "--force", target_ref)
     return repo, number, base_ref
 

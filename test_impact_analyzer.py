@@ -5,9 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from impact_analyzer import (
-    ChangedFile, Impact, Scenario, StepDefinition, cucumber_pattern,
+    ChangedFile, Impact, Scenario, StepDefinition, cucumber_pattern, default_base,
     discover_scenarios, impacted_definitions, minimal_subset, parse_github_pull_location,
-    parse_pull_request_url,
+    parse_azure_pull_request_url, parse_pull_request_url,
 )
 
 
@@ -68,6 +68,27 @@ Feature: Cart
             parse_github_pull_location("https://github.com/kailashmishra-hub/GHCP/pulls"),
             ("kailashmishra-hub", "GHCP", None),
         )
+
+    def test_parses_azure_pull_request_url(self):
+        self.assertEqual(
+            parse_azure_pull_request_url(
+                "https://dev.azure.com/example-org/Automation/_git/UI-Tests/pullrequest/42"
+            ),
+            ("example-org", "Automation", "UI-Tests", 42),
+        )
+        self.assertEqual(
+            parse_azure_pull_request_url(
+                "https://example-org.visualstudio.com/Automation/_git/UI-Tests/pullrequest/42"
+            ),
+            ("example-org", "Automation", "UI-Tests", 42),
+        )
+        self.assertIsNone(parse_azure_pull_request_url("https://dev.azure.com/example-org/Automation"))
+
+    def test_detects_main_then_master_base(self):
+        with patch("impact_analyzer.available_refs", return_value=["origin/main", "origin/master"]):
+            self.assertEqual(default_base(Path(".")), "origin/main")
+        with patch("impact_analyzer.available_refs", return_value=["origin/master"]):
+            self.assertEqual(default_base(Path(".")), "origin/master")
 
 
 if __name__ == "__main__":
