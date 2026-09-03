@@ -397,9 +397,18 @@ def _closing_brace(text: str, opening: int) -> int:
     return len(text) - 1
 
 
-def discover_step_definitions(repo: Path) -> list[StepDefinition]:
+def repository_files(repo: Path) -> list[Path]:
+    """Return tracked and relevant untracked files without walking ignored directories."""
+    output = run_git(repo, "ls-files", "-z", "-co", "--exclude-standard", check=False)
+    if output:
+        return [repo / name for name in output.split("\0") if name]
+    # Supports isolated parser tests and folders that have not been initialized yet.
+    return [path for path in repo.rglob("*") if path.is_file()]
+
+
+def discover_step_definitions(repo: Path, files: Iterable[Path] | None = None) -> list[StepDefinition]:
     definitions: list[StepDefinition] = []
-    for path in repo.rglob("*"):
+    for path in files if files is not None else repository_files(repo):
         if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES or any(part in IGNORED_PARTS for part in path.parts):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -415,10 +424,10 @@ def discover_step_definitions(repo: Path) -> list[StepDefinition]:
     return definitions
 
 
-def discover_scenarios(repo: Path) -> list[Scenario]:
+def discover_scenarios(repo: Path, files: Iterable[Path] | None = None) -> list[Scenario]:
     scenarios: list[Scenario] = []
-    for path in repo.rglob("*.feature"):
-        if any(part in IGNORED_PARTS for part in path.parts):
+    for path in files if files is not None else repository_files(repo):
+        if path.suffix.lower() != ".feature" or any(part in IGNORED_PARTS for part in path.parts):
             continue
         pending_tags: list[str] = []
         current: Scenario | None = None
@@ -589,10 +598,11 @@ def minimal_subset(impacts: list[Impact]) -> tuple[list[Impact], set[str]]:
 def analyze(repo_path: Path, base_ref: str, target_ref: str = "HEAD", include_worktree: bool = True) -> Analysis:
     repo = validate_repo(repo_path)
     changes, base_sha = discover_changes(repo, base_ref, target_ref, include_worktree)
+    files = repository_files(repo)
     definition_links = impacted_definitions(
-        repo, changes, discover_step_definitions(repo), base_sha, target_ref, include_worktree
+        repo, changes, discover_step_definitions(repo, files), base_sha, target_ref, include_worktree
     )
-    scenarios = discover_scenarios(repo)
+    scenarios = discover_scenarios(repo, files)
     impacts = build_impacts(definition_links, scenarios)
     recommended, uncovered = minimal_subset(impacts)
     return Analysis(repo, base_ref, base_sha, target_ref, changes, impacts, recommended, uncovered)
