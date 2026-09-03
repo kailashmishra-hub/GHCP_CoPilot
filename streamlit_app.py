@@ -138,7 +138,10 @@ def ai_recommendation(analysis: Analysis) -> str:
 
 
 def render_analysis(analysis: Analysis) -> None:
-    st.caption(f"Comparison: `{analysis.base_ref}...{analysis.target_ref}` (merge base `{analysis.base_sha[:10]}`)")
+    st.caption(
+        f"Comparison: `{analysis.base_ref}` → `{analysis.target_ref}` "
+        f"(base commit `{analysis.base_sha[:10]}`)"
+    )
     impacting_paths = {path for impact in analysis.impacts for path in impact.changed_files}
     impacting_classes = [item for item in analysis.changed_files if item.path in impacting_paths]
     metrics = st.columns(2)

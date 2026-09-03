@@ -393,9 +393,9 @@ def _parse_name_status(output: str) -> list[tuple[str, str]]:
 
 
 def discover_changes(repo: Path, base_ref: str, target_ref: str, include_worktree: bool) -> tuple[list[ChangedFile], str]:
-    base_sha = run_git(repo, "merge-base", base_ref, target_ref).strip()
+    base_sha = run_git(repo, "rev-parse", "--verify", base_ref).strip()
     if not base_sha:
-        raise RuntimeError(f"No merge base between {base_ref} and {target_ref}")
+        raise RuntimeError(f"Base branch or commit was not found: {base_ref}")
     entries = _parse_name_status(run_git(repo, "diff", "--name-status", "--find-renames", base_sha, target_ref))
     if include_worktree:
         entries += _parse_name_status(run_git(repo, "diff", "--cached", "--name-status", "--find-renames"))
