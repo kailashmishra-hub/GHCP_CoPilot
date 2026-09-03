@@ -7,7 +7,7 @@ from unittest.mock import patch
 from impact_analyzer import (
     ChangedFile, Impact, Scenario, StepDefinition, cucumber_pattern, default_base,
     discover_scenarios, impacted_definitions, minimal_subset, parse_github_pull_location,
-    parse_azure_pull_request_url, parse_pull_request_url,
+    parse_azure_branch_url, parse_azure_pull_request_url, parse_pull_request_url,
 )
 
 
@@ -89,6 +89,20 @@ Feature: Cart
             self.assertEqual(default_base(Path(".")), "origin/main")
         with patch("impact_analyzer.available_refs", return_value=["origin/master"]):
             self.assertEqual(default_base(Path(".")), "origin/master")
+
+    def test_parses_azure_branch_url(self):
+        self.assertEqual(
+            parse_azure_branch_url(
+                "https://dev.azure.com/bob/bob1/_git/P111_BWKYCOAUTOMATION"
+                "?version=GB04.44_SampleY"
+            ),
+            ("bob", "bob1", "P111_BWKYCOAUTOMATION", "04.44_SampleY"),
+        )
+        self.assertIsNone(
+            parse_azure_branch_url(
+                "https://dev.azure.com/bob/bob1/_git/P111_BWKYCOAUTOMATION"
+            )
+        )
 
 
 if __name__ == "__main__":

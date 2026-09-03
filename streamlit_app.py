@@ -9,7 +9,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from impact_analyzer import Analysis, NoActivePullRequest, analyze, default_base, parse_azure_pull_request_url, parse_github_pull_location, prepare_azure_pull_repository, prepare_remote_pull_repository, risk_score, validate_repo
+from impact_analyzer import Analysis, NoActivePullRequest, analyze, analyze_branch_snapshot, available_refs, default_base, parse_azure_branch_url, parse_azure_pull_request_url, parse_github_pull_location, prepare_azure_branch_repository, prepare_azure_pull_repository, prepare_remote_pull_repository, risk_score, run_git, validate_repo
 
 
 st.set_page_config(page_title="GitHub Impact Tracker", page_icon="🔎", layout="wide")
@@ -164,10 +164,18 @@ def main() -> None:
         st.header("Repository")
         source_mode = st.radio(
             "Choose analysis source",
-            ["Local repository", "GitHub PR link", "Azure DevOps PR link"],
+            [
+                "Local repository",
+                "GitHub PR link",
+                "Azure DevOps PR link",
+                "Azure DevOps branch link",
+            ],
         )
         repo_path: Path | None = None
         detected_base = "origin/main"
+        base_options = ["origin/main", "origin/master", "main", "master"]
+        current_branch = "Not detected"
+        target_options = ["HEAD (current branch)"]
         custom_base = ""
         pull_request_link = ""
         azure_pat = ""
@@ -182,17 +190,38 @@ def main() -> None:
                 try:
                     repo_path = validate_repo(Path(selected_repo_path.strip().strip('"')))
                     detected_base = default_base(repo_path)
+                    refs = set(available_refs(repo_path))
+                    base_options = [
+                        ref for ref in ("origin/main", "origin/master", "main", "master")
+                        if ref in refs
+                    ] or [detected_base]
+                    current_branch = run_git(
+                        repo_path, "branch", "--show-current", check=False
+                    ).strip() or "Detached HEAD"
+                    target_options = ["HEAD (current branch)"] + sorted(
+                        ref for ref in refs
+                        if ref not in {"origin/HEAD", "HEAD"}
+                    )
                 except Exception as exc:
                     st.error(str(exc))
-            st.text_input(
+            selected_base = st.selectbox(
                 "Base branch",
-                value=detected_base,
-                disabled=True,
-                help="Automatically detects origin/main or origin/master.",
+                base_options,
+                index=base_options.index(detected_base) if detected_base in base_options else 0,
+                help="The current branch will be compared with this branch.",
             )
+            selected_target = st.selectbox(
+                "Target branch",
+                target_options,
+                help=(
+                    "Choose HEAD for the branch currently open in IntelliJ, or select another fetched "
+                    "branch. Other branches are analyzed in a temporary worktree without switching IntelliJ."
+                ),
+            )
+            st.caption(f"Currently checked out: `{current_branch}`")
             custom_base = st.text_input(
                 "Custom base ref/commit (optional)",
-                help="Leave empty for the detected base, or enter another branch, tag, SHA, or commit.",
+                help="Leave empty to use the selected base branch, or enter another branch, tag, SHA, or commit.",
             )
         elif source_mode == "GitHub PR link":
             pull_request_link = st.text_input(
@@ -201,7 +230,7 @@ def main() -> None:
                 help="You can also enter the repository pull-request list URL ending in /pulls.",
             )
             st.text_input("Base branch", value="origin/main", disabled=True, key="pr_base_branch")
-        else:
+        elif source_mode == "Azure DevOps PR link":
             pull_request_link = st.text_input(
                 "Azure DevOps pull request link",
                 placeholder="https://dev.azure.com/org/project/_git/repository/pullrequest/123",
@@ -220,6 +249,21 @@ def main() -> None:
             azure_pat = st.text_input(
                 "Azure DevOps PAT (optional for public repositories)",
                 type="password",
+                help="For private repositories, use a PAT with Code (Read) permission. It is not stored.",
+            )
+        else:
+            pull_request_link = st.text_input(
+                "Azure DevOps repository/branch link",
+                placeholder=(
+                    "https://dev.azure.com/org/project/_git/repository?version=GBfeature-branch"
+                ),
+                help="The branch is read from the version=GB... part of the URL.",
+            )
+            st.text_input("Base branch", value="origin/master", disabled=True, key="azure_branch_base")
+            azure_pat = st.text_input(
+                "Azure DevOps PAT (optional for public repositories)",
+                type="password",
+                key="azure_branch_pat",
                 help="For private repositories, use a PAT with Code (Read) permission. It is not stored.",
             )
         analyze_clicked = st.button("Analyze impact", type="primary", use_container_width=True)
@@ -258,16 +302,31 @@ def main() -> None:
                     target_ref = "HEAD"
                     st.session_state.pr_number = pull_number
                     st.session_state.pr_provider = "Azure DevOps"
+                elif source_mode == "Azure DevOps branch link":
+                    if not parse_azure_branch_url(pull_request_link):
+                        st.error(
+                            "Enter a valid Azure DevOps repository link containing ?version=GBbranch-name."
+                        )
+                        return
+                    analysis_repo, target_ref, base_ref = prepare_azure_branch_repository(
+                        pull_request_link, azure_pat.strip()
+                    )
+                    st.session_state.pop("pr_number", None)
+                    st.session_state.pop("pr_provider", None)
                 else:
                     if repo_path is None:
                         st.error("Select a local Git repository before running impact analysis.")
                         return
                     analysis_repo = repo_path
-                    base_ref = custom_base.strip() or detected_base
-                    target_ref = "HEAD"
+                    base_ref = custom_base.strip() or selected_base
+                    target_ref = "HEAD" if selected_target == "HEAD (current branch)" else selected_target
                     st.session_state.pop("pr_number", None)
                     st.session_state.pop("pr_provider", None)
-                st.session_state.analysis = analyze(analysis_repo, base_ref, target_ref, False)
+                st.session_state.analysis = (
+                    analyze_branch_snapshot(analysis_repo, base_ref, target_ref)
+                    if source_mode == "Local repository"
+                    else analyze(analysis_repo, base_ref, target_ref, False)
+                )
                 st.session_state.analysis_source_mode = source_mode
                 st.session_state.pop("ai_review", None)
         except NoActivePullRequest as exc:

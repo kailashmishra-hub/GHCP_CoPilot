@@ -5,10 +5,12 @@ import subprocess
 import tempfile
 import json
 import base64
+import shutil
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -161,6 +163,30 @@ def parse_azure_pull_request_url(value: str) -> tuple[str, str, str, int] | None
     else:
         return None
     return tuple(map(unquote, (organization, project, repository))) + (int(number),) if number.isdigit() else None
+
+
+def parse_azure_branch_url(value: str) -> tuple[str, str, str, str] | None:
+    parsed = urlparse(value.strip().replace("\\_", "_"))
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = parsed.netloc.lower()
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if host == "dev.azure.com":
+        if len(parts) != 4 or parts[2].lower() != "_git":
+            return None
+        organization, project, repository = parts[0], parts[1], parts[3]
+    elif host.endswith(".visualstudio.com"):
+        if len(parts) != 3 or parts[1].lower() != "_git":
+            return None
+        organization = host.removesuffix(".visualstudio.com")
+        project, repository = parts[0], parts[2]
+    else:
+        return None
+    version = parse_qs(parsed.query).get("version", [""])[0]
+    if not version.startswith("GB") or len(version) <= 2:
+        return None
+    branch = unquote(version[2:]).rstrip("…")
+    return organization, project, repository, branch
 
 
 def _remote_repository(remote_url: str) -> tuple[str, str] | None:
@@ -322,6 +348,36 @@ def prepare_azure_pull_repository(pull_request_url: str, pat: str = "") -> tuple
     _azure_git(repo, pat, "fetch", "--force", source_url, f"+{source_branch}:{target_ref}")
     run_git(repo, "checkout", "--detach", "--force", target_ref)
     return repo, number, base_ref
+
+
+def prepare_azure_branch_repository(branch_url: str, pat: str = "") -> tuple[Path, str, str]:
+    parsed = parse_azure_branch_url(branch_url)
+    if parsed is None:
+        raise RuntimeError(
+            "Enter an Azure DevOps branch URL containing ?version=GBbranch-name."
+        )
+    organization, project, repository, branch = parsed
+    remote_url = (
+        f"https://dev.azure.com/{quote(organization, safe='')}/{quote(project, safe='')}/"
+        f"_git/{quote(repository, safe='')}"
+    )
+    cache_key = hashlib.sha256(
+        f"{organization}/{project}/{repository}".encode("utf-8")
+    ).hexdigest()[:16]
+    destination = Path(tempfile.gettempdir()) / "ghcp-impact-azure-branches" / cache_key
+    if not (destination / ".git").is_dir():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _azure_git(None, pat, "clone", "--no-checkout", remote_url, str(destination))
+    repo = validate_repo(destination)
+    base_ref = "origin/master"
+    target_ref = f"origin/{branch}"
+    _azure_git(
+        repo, pat, "fetch", "--force", "origin",
+        "+refs/heads/master:refs/remotes/origin/master",
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+    )
+    run_git(repo, "checkout", "--detach", "--force", target_ref)
+    return repo, target_ref, base_ref
 
 
 def _parse_name_status(output: str) -> list[tuple[str, str]]:
@@ -711,6 +767,31 @@ def analyze(repo_path: Path, base_ref: str, target_ref: str = "HEAD", include_wo
     impacts = build_impacts(definition_links, scenarios)
     recommended, uncovered = minimal_subset(impacts)
     return Analysis(repo, base_ref, base_sha, target_ref, changes, impacts, recommended, uncovered)
+
+
+def analyze_branch_snapshot(repo_path: Path, base_ref: str, target_ref: str) -> Analysis:
+    """Analyze any local/fetched branch without changing the user's working tree."""
+    repo = validate_repo(repo_path)
+    current_sha = run_git(repo, "rev-parse", "HEAD").strip()
+    target_sha = run_git(repo, "rev-parse", "--verify", target_ref).strip()
+    if current_sha == target_sha:
+        return analyze(repo, base_ref, target_ref, False)
+
+    worktree = Path(tempfile.mkdtemp(prefix="ghcp-impact-worktree-"))
+    # Git requires the worktree destination not to exist before it is added.
+    worktree.rmdir()
+    added = False
+    try:
+        run_git(repo, "worktree", "add", "--detach", str(worktree), target_ref)
+        added = True
+        result = analyze(worktree, base_ref, target_ref, False)
+        result.repo = repo
+        return result
+    finally:
+        if added:
+            run_git(repo, "worktree", "remove", "--force", str(worktree), check=False)
+        if worktree.exists():
+            shutil.rmtree(worktree, ignore_errors=True)
 
 
 def scenario_report(impacts: Iterable[Impact]) -> str:

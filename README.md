@@ -25,6 +25,8 @@ and tags, and selects a small regression subset using coverage optimization.
 It can also analyze an active GitHub or Azure DevOps pull-request URL. Private Azure
 Repos require a PAT with Code (Read) permission; the PAT is used only for the request
 and is not stored.
+An Azure DevOps repository URL containing `?version=GBbranch-name` can be analyzed
+directly against `origin/master` without creating a pull request.
 
     python -m pip install -r requirements.txt
     streamlit run streamlit_app.py
