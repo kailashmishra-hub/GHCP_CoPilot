@@ -100,10 +100,6 @@ def ai_recommendation(analysis: Analysis) -> str:
     impacting_paths = sorted({path for impact in analysis.impacts for path in impact.changed_files})
     facts = {
         "changed_files_with_feature_impact": impacting_paths,
-        "changed_feature_files": [
-            {"path": item.path, "status": STATUS_NAMES.get(item.status, item.status)}
-            for item in analysis.changed_files if item.path.lower().endswith(".feature")
-        ],
         "impacted_scenarios": impact_rows(analysis),
         "deterministic_minimal_subset": recommendation_rows(analysis),
     }
@@ -147,17 +143,10 @@ def render_analysis(analysis: Analysis) -> None:
         f"(base commit `{analysis.base_sha[:10]}`)"
     )
     impacting_paths = {path for impact in analysis.impacts for path in impact.changed_files}
-    impacting_classes = [
-        item for item in analysis.changed_files
-        if item.source and item.path in impacting_paths
-    ]
-    changed_features = [
-        item for item in analysis.changed_files if item.path.lower().endswith(".feature")
-    ]
-    metrics = st.columns(3)
+    impacting_classes = [item for item in analysis.changed_files if item.path in impacting_paths]
+    metrics = st.columns(2)
     metrics[0].metric("Impacting class files", len(impacting_classes))
-    metrics[1].metric("Changed feature files", len(changed_features))
-    metrics[2].metric("Impacted scenarios", len(analysis.impacts))
+    metrics[1].metric("Impacted scenarios", len(analysis.impacts))
 
     st.subheader("1. Changed class files with feature impact")
     if impacting_classes:
@@ -169,23 +158,6 @@ def render_analysis(analysis: Analysis) -> None:
                     render_code_change_table(change)
     else:
         st.info("No changed class files could be traced to any feature scenario.")
-
-    st.subheader("2. Changed feature files")
-    if changed_features:
-        for item in changed_features:
-            with st.expander(f"{STATUS_NAMES.get(item.status, item.status)} · {item.path}", expanded=True):
-                for change in item.code_changes:
-                    st.markdown(f"**Scenario/Context:** `{change.method}`")
-                    st.markdown(f"**Change Type:** {change.change_type}")
-                    render_code_change_table(change)
-                related = [impact for impact in analysis.impacts if item.path in impact.changed_files]
-                if related:
-                    st.markdown("**Affected scenarios and tags:**")
-                    for impact in related:
-                        tags = " ".join(impact.scenario.tags) or "No tags"
-                        st.markdown(f"- `{impact.scenario.name}` — {tags}")
-    else:
-        st.info("No feature files changed between the selected branches.")
 
 def main() -> None:
     st.title("GitHub Impacted Scenarios Tracker")
@@ -384,7 +356,7 @@ def main() -> None:
         st.success(f"Analyzing {provider} pull request #{st.session_state.pr_number} against its target branch.")
     render_analysis(analysis)
 
-    st.subheader("3. GitHub Copilot recommended regression subset")
+    st.subheader("2. GitHub Copilot recommended regression subset")
     st.caption("GitHub Copilot reviews only the traceable impacted scenarios and chooses the smallest risk-aware subset that covers the changed class behavior.")
     if not analysis.impacts:
         st.info("There are no impacted scenarios for AI to optimize.")

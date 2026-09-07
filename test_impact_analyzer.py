@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from impact_analyzer import (
     ChangedFile, Impact, Scenario, StepDefinition, cucumber_pattern, default_base,
-    discover_scenarios, feature_file_impacts, impacted_definitions, minimal_subset, parse_github_pull_location,
+    discover_scenarios, impacted_definitions, minimal_subset, parse_github_pull_location,
     parse_azure_branch_url, parse_azure_pull_request_url, parse_pull_request_url,
 )
 
@@ -103,22 +103,6 @@ Feature: Cart
                 "https://dev.azure.com/bob/bob1/_git/P111_BWKYCOAUTOMATION"
             )
         )
-
-    def test_changed_feature_tags_impact_the_scenario(self):
-        with tempfile.TemporaryDirectory() as folder:
-            repo = Path(folder)
-            feature = repo / "src/test/resources/cart.feature"
-            feature.parent.mkdir(parents=True)
-            feature.write_text(
-                "Feature: Cart\n\n  @smoke\n  Scenario: Add item\n    Given I have a cart\n",
-                encoding="utf-8",
-            )
-            scenarios = discover_scenarios(repo)
-            change = ChangedFile("M", "src/test/resources/cart.feature", False)
-            with patch("impact_analyzer.changed_line_numbers", return_value={3}):
-                impacts = feature_file_impacts(repo, [change], scenarios, "base", "HEAD", False)
-            self.assertEqual([impact.scenario.name for impact in impacts], ["Add item"])
-            self.assertEqual(impacts[0].scenario.tags, ["@smoke"])
 
 
 if __name__ == "__main__":

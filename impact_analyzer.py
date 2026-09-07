@@ -408,12 +408,12 @@ def discover_changes(repo: Path, base_ref: str, target_ref: str, include_worktre
         ChangedFile(
             status,
             path,
-            Path(path).suffix.lower() in SOURCE_SUFFIXES,
+            True,
             summarize_file_changes(repo, base_sha, target_ref, path, include_worktree),
             structured_file_changes(repo, base_sha, target_ref, path),
         )
         for path, status in deduped.items()
-        if Path(path).suffix.lower() in SOURCE_SUFFIXES | {".feature"}
+        if Path(path).suffix.lower() in SOURCE_SUFFIXES
         and not any(part in IGNORED_PARTS for part in Path(path).parts)
     ]
     return sorted(changes, key=lambda item: item.path), base_sha
@@ -464,17 +464,6 @@ def _method_at_line(source: str, line_number: int) -> str:
         if match and match.group(1) not in control_words:
             return f"{match.group(1)}()"
     return "Class-level change"
-
-
-def _change_context(source: str, line_number: int, path: str) -> str:
-    if not path.lower().endswith(".feature"):
-        return _method_at_line(source, line_number)
-    lines = source.splitlines()
-    for index in range(min(line_number - 1, len(lines) - 1), -1, -1):
-        stripped = lines[index].strip()
-        if stripped.lower().startswith(("scenario:", "scenario outline:", "background:", "feature:")):
-            return stripped
-    return "Feature-level change"
 
 
 def _git_file(repo: Path, ref: str, path: str) -> str:
@@ -536,7 +525,7 @@ def structured_file_changes(repo: Path, base_sha: str, target_ref: str, path: st
         change_type = "Modified functionality" if saw_removed and saw_added else (
             "Added functionality" if saw_added else "Removed functionality"
         )
-        method = _change_context(target_source, first_changed_line or new_line, path)
+        method = _method_at_line(target_source, first_changed_line or new_line)
         changes.append(CodeChange(method, change_type, tuple(rows)))
     return tuple(changes)
 
@@ -716,17 +705,10 @@ def feature_file_impacts(repo: Path, changes: list[ChangedFile], scenarios: list
             continue
         touched = changed_line_numbers(repo, base_sha, target, change.path, include_worktree)
         ordered = sorted(by_file[change.path], key=lambda item: item.line)
-        feature_lines = (repo / change.path).read_text(encoding="utf-8", errors="ignore").splitlines()
-        total_lines = len(feature_lines)
+        total_lines = len((repo / change.path).read_text(encoding="utf-8", errors="ignore").splitlines())
         for index, scenario in enumerate(ordered):
             end = ordered[index + 1].line - 1 if index + 1 < len(ordered) else total_lines
-            start = scenario.line
-            while start > 1 and (
-                not feature_lines[start - 2].strip()
-                or feature_lines[start - 2].strip().startswith("@")
-            ):
-                start -= 1
-            if not touched or touched.intersection(range(start, end + 1)):
+            if not touched or touched.intersection(range(scenario.line, end + 1)):
                 impacts.append(Impact(
                     scenario=scenario,
                     impacted_steps=list(scenario.steps),
@@ -782,10 +764,7 @@ def analyze(repo_path: Path, base_ref: str, target_ref: str = "HEAD", include_wo
         repo, changes, discover_step_definitions(repo, files), base_sha, target_ref, include_worktree
     )
     scenarios = discover_scenarios(repo, files)
-    impacts = merge_impacts(
-        build_impacts(definition_links, scenarios),
-        feature_file_impacts(repo, changes, scenarios, base_sha, target_ref, include_worktree),
-    )
+    impacts = build_impacts(definition_links, scenarios)
     recommended, uncovered = minimal_subset(impacts)
     return Analysis(repo, base_ref, base_sha, target_ref, changes, impacts, recommended, uncovered)
 
