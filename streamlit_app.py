@@ -217,11 +217,13 @@ def main() -> None:
                 "Target branch",
                 target_options,
                 help=(
-                    "Choose HEAD for the branch currently open in IntelliJ, or select another fetched "
-                    "branch. Other branches are analyzed in a temporary worktree without switching IntelliJ."
+                    "The checked-out branch and its origin counterpart use the live working tree. "
+                    "Other branches are analyzed in a temporary worktree without switching IntelliJ."
                 ),
             )
-            st.caption(f"Currently checked out: `{current_branch}`")
+            st.caption(
+                f"Currently checked out: `{current_branch}`. Its committed, staged, and unstaged changes are included."
+            )
             custom_base = st.text_input(
                 "Custom base ref/commit (optional)",
                 help="Leave empty to use the selected base branch, or enter another branch, tag, SHA, or commit.",
@@ -322,7 +324,12 @@ def main() -> None:
                         return
                     analysis_repo = repo_path
                     base_ref = custom_base.strip() or selected_base
-                    target_ref = "HEAD" if selected_target == "HEAD (current branch)" else selected_target
+                    current_targets = {
+                        "HEAD (current branch)",
+                        current_branch,
+                        f"origin/{current_branch}",
+                    }
+                    target_ref = "HEAD" if selected_target in current_targets else selected_target
                     st.session_state.pop("pr_number", None)
                     st.session_state.pop("pr_provider", None)
                 st.session_state.analysis = (
