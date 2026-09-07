@@ -96,7 +96,7 @@ class Analysis:
 def run_git(repo: Path, *args: str, check: bool = True) -> str:
     safe = str(repo.resolve()).replace("\\", "/")
     completed = subprocess.run(
-        ["git", "-c", f"safe.directory={safe}", *args], cwd=repo,
+        ["git", "-c", "core.longpaths=true", "-c", f"safe.directory={safe}", *args], cwd=repo,
         text=True, encoding="utf-8", errors="replace", capture_output=True,
     )
     if check and completed.returncode:
@@ -245,7 +245,7 @@ def _azure_api(url: str, pat: str = ""):
 
 
 def _azure_git(repo: Path | None, pat: str, *args: str) -> None:
-    command = ["git"]
+    command = ["git", "-c", "core.longpaths=true"]
     if pat:
         token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
         command += ["-c", f"http.extraHeader=Authorization: Basic {token}"]
@@ -284,7 +284,7 @@ def prepare_remote_pull_repository(pull_location_url: str) -> tuple[Path, int, s
     if not (destination / ".git").is_dir():
         destination.parent.mkdir(parents=True, exist_ok=True)
         completed = subprocess.run(
-            ["git", "clone", "--no-checkout", remote_url, str(destination)],
+            ["git", "-c", "core.longpaths=true", "clone", "--no-checkout", remote_url, str(destination)],
             text=True, encoding="utf-8", errors="replace", capture_output=True,
         )
         if completed.returncode:
