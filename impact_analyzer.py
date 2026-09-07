@@ -396,11 +396,15 @@ def discover_changes(repo: Path, base_ref: str, target_ref: str, include_worktre
     base_sha = run_git(repo, "rev-parse", "--verify", base_ref).strip()
     if not base_sha:
         raise RuntimeError(f"Base branch or commit was not found: {base_ref}")
-    entries = _parse_name_status(run_git(repo, "diff", "--name-status", "--find-renames", base_sha, target_ref))
     if include_worktree:
-        entries += _parse_name_status(run_git(repo, "diff", "--cached", "--name-status", "--find-renames"))
-        entries += _parse_name_status(run_git(repo, "diff", "--name-status", "--find-renames"))
+        entries = _parse_name_status(
+            run_git(repo, "diff", "--name-status", "--find-renames", base_sha)
+        )
         entries += [("A", path) for path in run_git(repo, "ls-files", "--others", "--exclude-standard").splitlines()]
+    else:
+        entries = _parse_name_status(
+            run_git(repo, "diff", "--name-status", "--find-renames", base_sha, target_ref)
+        )
     deduped: dict[str, str] = {}
     for status, path in entries:
         deduped[path] = status
@@ -410,7 +414,7 @@ def discover_changes(repo: Path, base_ref: str, target_ref: str, include_worktre
             path,
             True,
             summarize_file_changes(repo, base_sha, target_ref, path, include_worktree),
-            structured_file_changes(repo, base_sha, target_ref, path),
+            structured_file_changes(repo, base_sha, target_ref, path, include_worktree),
         )
         for path, status in deduped.items()
         if Path(path).suffix.lower() in SOURCE_SUFFIXES
@@ -420,12 +424,10 @@ def discover_changes(repo: Path, base_ref: str, target_ref: str, include_worktre
 
 
 def summarize_file_changes(repo: Path, base_sha: str, target_ref: str, path: str, include_worktree: bool) -> str:
-    patches = [run_git(repo, "diff", "--unified=0", base_sha, target_ref, "--", path, check=False)]
-    if include_worktree:
-        patches.extend([
-            run_git(repo, "diff", "--cached", "--unified=0", "--", path, check=False),
-            run_git(repo, "diff", "--unified=0", "--", path, check=False),
-        ])
+    patches = [run_git(
+        repo, "diff", "--unified=0", base_sha,
+        *([] if include_worktree else [target_ref]), "--", path, check=False,
+    )]
     removed: list[str] = []
     added: list[str] = []
     for patch in patches:
@@ -479,9 +481,19 @@ def _pair_change_block(removed: list[str], added: list[str]) -> list[CodeDiffRow
     return rows
 
 
-def structured_file_changes(repo: Path, base_sha: str, target_ref: str, path: str) -> tuple[CodeChange, ...]:
-    patch = run_git(repo, "diff", "--unified=2", base_sha, target_ref, "--", path, check=False)
-    target_source = _git_file(repo, target_ref, path)
+def structured_file_changes(
+        repo: Path, base_sha: str, target_ref: str, path: str, include_worktree: bool = False
+) -> tuple[CodeChange, ...]:
+    if include_worktree:
+        patch = run_git(repo, "diff", "--unified=2", base_sha, "--", path, check=False)
+        working_file = repo / path
+        target_source = (
+            working_file.read_text(encoding="utf-8", errors="ignore")
+            if working_file.is_file() else ""
+        )
+    else:
+        patch = run_git(repo, "diff", "--unified=2", base_sha, target_ref, "--", path, check=False)
+        target_source = _git_file(repo, target_ref, path)
     changes: list[CodeChange] = []
     hunk_pattern = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$")
     lines = patch.splitlines()
@@ -615,12 +627,10 @@ def discover_scenarios(repo: Path, files: Iterable[Path] | None = None) -> list[
 
 
 def changed_line_numbers(repo: Path, base_sha: str, target: str, path: str, include_worktree: bool) -> set[int]:
-    patches = [run_git(repo, "diff", "--unified=0", base_sha, target, "--", path, check=False)]
-    if include_worktree:
-        patches += [
-            run_git(repo, "diff", "--cached", "--unified=0", "--", path, check=False),
-            run_git(repo, "diff", "--unified=0", "--", path, check=False),
-        ]
+    patches = [run_git(
+        repo, "diff", "--unified=0", base_sha,
+        *([] if include_worktree else [target]), "--", path, check=False,
+    )]
     lines: set[int] = set()
     for patch in patches:
         for match in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", patch, re.M):
@@ -775,7 +785,7 @@ def analyze_branch_snapshot(repo_path: Path, base_ref: str, target_ref: str) -> 
     current_sha = run_git(repo, "rev-parse", "HEAD").strip()
     target_sha = run_git(repo, "rev-parse", "--verify", target_ref).strip()
     if current_sha == target_sha:
-        return analyze(repo, base_ref, target_ref, False)
+        return analyze(repo, base_ref, target_ref, target_ref == "HEAD")
 
     worktree = Path(tempfile.mkdtemp(prefix="ghcp-impact-worktree-"))
     # Git requires the worktree destination not to exist before it is added.
