@@ -20,6 +20,7 @@ public class LoginSteps {
     public void i_enter_credentiallsis(String username, String password3) {
         loginPage.enterUsername(username);
         loginPage.enterPassword(password3);
+        loginPage.enterPassword("kjjkkjkjkj);
     }
 
     @And("I click login")

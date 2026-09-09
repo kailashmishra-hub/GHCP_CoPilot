@@ -5,12 +5,10 @@ import subprocess
 import tempfile
 import json
 import base64
-import shutil
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -112,18 +110,6 @@ def validate_repo(repo: Path) -> Path:
     return Path(top).resolve()
 
 
-def available_refs(repo: Path) -> list[str]:
-    return sorted(set(run_git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes").splitlines()))
-
-
-def default_base(repo: Path) -> str:
-    refs = set(available_refs(repo))
-    for ref in ("origin/main", "origin/master", "main", "master"):
-        if ref in refs:
-            return ref
-    raise RuntimeError("No master/main ref found. Select a base ref explicitly.")
-
-
 def parse_pull_request_url(value: str) -> tuple[str, str, int] | None:
     parsed = urlparse(value.strip())
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
@@ -165,30 +151,6 @@ def parse_azure_pull_request_url(value: str) -> tuple[str, str, str, int] | None
     return tuple(map(unquote, (organization, project, repository))) + (int(number),) if number.isdigit() else None
 
 
-def parse_azure_branch_url(value: str) -> tuple[str, str, str, str] | None:
-    parsed = urlparse(value.strip().replace("\\_", "_"))
-    if parsed.scheme not in {"http", "https"}:
-        return None
-    host = parsed.netloc.lower()
-    parts = [unquote(part) for part in parsed.path.split("/") if part]
-    if host == "dev.azure.com":
-        if len(parts) != 4 or parts[2].lower() != "_git":
-            return None
-        organization, project, repository = parts[0], parts[1], parts[3]
-    elif host.endswith(".visualstudio.com"):
-        if len(parts) != 3 or parts[1].lower() != "_git":
-            return None
-        organization = host.removesuffix(".visualstudio.com")
-        project, repository = parts[0], parts[2]
-    else:
-        return None
-    version = parse_qs(parsed.query).get("version", [""])[0]
-    if not version.startswith("GB") or len(version) <= 2:
-        return None
-    branch = unquote(version[2:]).rstrip("…")
-    return organization, project, repository, branch
-
-
 def _remote_repository(remote_url: str) -> tuple[str, str] | None:
     match = re.search(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?$", remote_url.strip(), re.I)
     return (match.group(1), match.group(2)) if match else None
@@ -211,13 +173,15 @@ def fetch_pull_request(repo: Path, pull_request_url: str) -> str:
 
 
 def _github_api(path: str):
+    url = f"https://api.github.com{path}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "GHCP-impact-tracker",
+    }
     request = Request(
-        f"https://api.github.com{path}",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "GHCP-impact-tracker",
-        },
+        url,
+        headers=headers,
     )
     try:
         with urlopen(request, timeout=20) as response:
@@ -225,7 +189,27 @@ def _github_api(path: str):
     except HTTPError as exc:
         raise RuntimeError(f"GitHub API returned HTTP {exc.code}.") from exc
     except URLError as exc:
-        raise RuntimeError(f"Unable to connect to the GitHub API: {exc.reason}") from exc
+        command = ["curl.exe", "--fail", "--silent", "--show-error", "--location", "--max-time", "30"]
+        for name, value in headers.items():
+            command.extend(["--header", f"{name}: {value}"])
+        command.append(url)
+        try:
+            completed = subprocess.run(
+                command, text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+        except OSError as curl_exc:
+            raise RuntimeError(
+                f"Unable to connect to the GitHub API with Python or curl: {exc.reason}"
+            ) from curl_exc
+        if completed.returncode:
+            detail = completed.stderr.strip() or f"curl exited with code {completed.returncode}"
+            raise RuntimeError(
+                f"Unable to connect to the GitHub API with Python ({exc.reason}) or curl ({detail})."
+            ) from exc
+        try:
+            return json.loads(completed.stdout)
+        except json.JSONDecodeError as json_exc:
+            raise RuntimeError("GitHub returned an invalid API response through curl.") from json_exc
 
 
 def _azure_api(url: str, pat: str = ""):
@@ -348,36 +332,6 @@ def prepare_azure_pull_repository(pull_request_url: str, pat: str = "") -> tuple
     _azure_git(repo, pat, "fetch", "--force", source_url, f"+{source_branch}:{target_ref}")
     run_git(repo, "checkout", "--detach", "--force", target_ref)
     return repo, number, base_ref
-
-
-def prepare_azure_branch_repository(branch_url: str, pat: str = "") -> tuple[Path, str, str]:
-    parsed = parse_azure_branch_url(branch_url)
-    if parsed is None:
-        raise RuntimeError(
-            "Enter an Azure DevOps branch URL containing ?version=GBbranch-name."
-        )
-    organization, project, repository, branch = parsed
-    remote_url = (
-        f"https://dev.azure.com/{quote(organization, safe='')}/{quote(project, safe='')}/"
-        f"_git/{quote(repository, safe='')}"
-    )
-    cache_key = hashlib.sha256(
-        f"{organization}/{project}/{repository}".encode("utf-8")
-    ).hexdigest()[:16]
-    destination = Path(tempfile.gettempdir()) / "ghcp-impact-azure-branches" / cache_key
-    if not (destination / ".git").is_dir():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _azure_git(None, pat, "clone", "--no-checkout", remote_url, str(destination))
-    repo = validate_repo(destination)
-    base_ref = "origin/master"
-    target_ref = f"origin/{branch}"
-    _azure_git(
-        repo, pat, "fetch", "--force", "origin",
-        "+refs/heads/master:refs/remotes/origin/master",
-        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-    )
-    run_git(repo, "checkout", "--detach", "--force", target_ref)
-    return repo, target_ref, base_ref
 
 
 def _parse_name_status(output: str) -> list[tuple[str, str]]:
@@ -643,9 +597,40 @@ def _variables_for_type(source: str, type_name: str) -> set[str]:
     return set(re.findall(rf"\b{re.escape(type_name)}\s+([A-Za-z_$][\w$]*)", source))
 
 
+def _class_inheritance(repo: Path) -> dict[str, set[str]]:
+    children: dict[str, set[str]] = {}
+    declaration = re.compile(
+        r"\bclass\s+([A-Za-z_$][\w$]*)[^{};]*?\bextends\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)"
+    )
+    for path in repository_files(repo):
+        if path.suffix.lower() not in SOURCE_SUFFIXES or any(part in IGNORED_PARTS for part in path.parts):
+            continue
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        for child, parent in declaration.findall(source):
+            children.setdefault(parent.rsplit(".", 1)[-1], set()).add(child)
+    return children
+
+
+def _descendant_types(children: dict[str, set[str]], parent: str) -> set[str]:
+    descendants: set[str] = set()
+    pending = list(children.get(parent, set()))
+    while pending:
+        child = pending.pop()
+        if child in descendants:
+            continue
+        descendants.add(child)
+        pending.extend(children.get(child, set()))
+    return descendants
+
+
 def impacted_definitions(repo: Path, changes: list[ChangedFile], definitions: list[StepDefinition], base_sha: str, target: str, include_worktree: bool) -> dict[StepDefinition, dict[str, str]]:
     source_changes = [change for change in changes if change.source]
     changed_names = {change.path: Path(change.path).stem for change in source_changes}
+    inheritance = _class_inheritance(repo)
+    affected_types = {
+        path: {type_name, *_descendant_types(inheritance, type_name)}
+        for path, type_name in changed_names.items()
+    }
     line_cache = {change.path: changed_line_numbers(repo, base_sha, target, change.path, include_worktree) for change in source_changes}
     source_cache: dict[str, str] = {}
     result: dict[StepDefinition, dict[str, str]] = {}
@@ -656,17 +641,26 @@ def impacted_definitions(repo: Path, changes: list[ChangedFile], definitions: li
                 if not touched or touched.intersection(range(definition.start_line, definition.end_line + 1)):
                     result.setdefault(definition, {})[change.path] = "changed step-definition method"
                 continue
-            type_name = changed_names[change.path]
-            if type_name == Path(definition.file).stem:
+            changed_type = changed_names[change.path]
+            if changed_type == Path(definition.file).stem:
                 continue
-            step_source = source_cache.setdefault(definition.file, (repo / definition.file).read_text(encoding="utf-8", errors="ignore"))
-            if not re.search(rf"\b{re.escape(type_name)}\b", step_source):
-                continue
-            variables = _variables_for_type(step_source, type_name)
-            if re.search(rf"\b{re.escape(type_name)}\b", definition.body) or any(
-                    re.search(rf"\b{re.escape(variable)}\b", definition.body) for variable in variables
-            ):
-                result.setdefault(definition, {})[change.path] = f"references changed class {type_name}"
+            step_source = source_cache.setdefault(
+                definition.file, (repo / definition.file).read_text(encoding="utf-8", errors="ignore")
+            )
+            for referenced_type in affected_types[change.path]:
+                if not re.search(rf"\b{re.escape(referenced_type)}\b", step_source):
+                    continue
+                variables = _variables_for_type(step_source, referenced_type)
+                if re.search(rf"\b{re.escape(referenced_type)}\b", definition.body) or any(
+                        re.search(rf"\b{re.escape(variable)}\b", definition.body) for variable in variables
+                ):
+                    reason = (
+                        f"references changed class {changed_type}"
+                        if referenced_type == changed_type
+                        else f"references {referenced_type}, which inherits changed class {changed_type}"
+                    )
+                    result.setdefault(definition, {})[change.path] = reason
+                    break
     return result
 
 
@@ -777,31 +771,6 @@ def analyze(repo_path: Path, base_ref: str, target_ref: str = "HEAD", include_wo
     impacts = build_impacts(definition_links, scenarios)
     recommended, uncovered = minimal_subset(impacts)
     return Analysis(repo, base_ref, base_sha, target_ref, changes, impacts, recommended, uncovered)
-
-
-def analyze_branch_snapshot(repo_path: Path, base_ref: str, target_ref: str) -> Analysis:
-    """Analyze any local/fetched branch without changing the user's working tree."""
-    repo = validate_repo(repo_path)
-    current_sha = run_git(repo, "rev-parse", "HEAD").strip()
-    target_sha = run_git(repo, "rev-parse", "--verify", target_ref).strip()
-    if current_sha == target_sha:
-        return analyze(repo, base_ref, target_ref, target_ref == "HEAD")
-
-    worktree = Path(tempfile.mkdtemp(prefix="ghcp-impact-worktree-"))
-    # Git requires the worktree destination not to exist before it is added.
-    worktree.rmdir()
-    added = False
-    try:
-        run_git(repo, "worktree", "add", "--detach", str(worktree), target_ref)
-        added = True
-        result = analyze(worktree, base_ref, target_ref, False)
-        result.repo = repo
-        return result
-    finally:
-        if added:
-            run_git(repo, "worktree", "remove", "--force", str(worktree), check=False)
-        if worktree.exists():
-            shutil.rmtree(worktree, ignore_errors=True)
 
 
 def scenario_report(impacts: Iterable[Impact]) -> str:
