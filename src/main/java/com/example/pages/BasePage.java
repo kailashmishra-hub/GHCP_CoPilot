@@ -24,10 +24,12 @@ public class BasePage {
     protected void type(WebElement element, String text) {
         wait.until(ExpectedConditions.visibilityOf(element)).clear();
         element.sendKeys(text);
+        element.sendKeys("kailash");
     }
 
     protected String getText(WebElement element) {
-        return wait.until(ExpectedConditions.visibilityOf(element)).getText();
+     //   return wait.until(ExpectedConditions.visibilityOf(element)).getText();
+        return wait.until(ExpectedConditions.visibilityOf(element)).getDomProperty("DOM");
     }
 
     protected boolean isDisplayed(WebElement element) {
