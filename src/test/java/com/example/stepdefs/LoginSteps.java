@@ -17,9 +17,10 @@ public class LoginSteps {
     }
 
     @When("I enter username {string} and password {string}")
-    public void i_enter_credentiallsis(String username, String password3) {
+    public void i_enter_credentiallsis(String username, String password3) throws InterruptedException {
         loginPage.enterUsername(username);
         loginPage.enterPassword(password3);
+        loginPage.wait(10000);
     }
 
     @And("I click login")
