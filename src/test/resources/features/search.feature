@@ -11,3 +11,11 @@ Feature: Search functionality
     Given I am on the home page
     When I search for "NonExistingProduct"
     Then I should see a "No results found" message
+
+  @ui_utils
+  Scenario: Use BasePage utilities to search and interact
+    Given I am on the home page
+    When I scroll to the search section
+    And I select "Electronics" from category dropdown
+    And I search for "Smartphone"
+    Then I should see results related to "Smartphone"
