@@ -1,8 +1,12 @@
 package com.example.pages;
 
+import org.openqa.selenium.JavascriptExecutor;
+import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
+import org.openqa.selenium.interactions.Actions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import java.time.Duration;
 
@@ -99,5 +103,44 @@ public class BasePage {
 
     protected void switchToFrame(WebElement frameElement) {
         wait.until(ExpectedConditions.frameToBeAvailableAndSwitchToIt(frameElement));
+    }
+
+    // More utility methods added
+    protected void waitForPageLoad(int seconds) {
+        new WebDriverWait(driver, Duration.ofSeconds(seconds)).until(webDriver -> ((JavascriptExecutor) webDriver)
+                .executeScript("return document.readyState").equals("complete"));
+    }
+
+    protected boolean waitForText(WebElement element, String text, int seconds) {
+        try {
+            return new WebDriverWait(driver, Duration.ofSeconds(seconds)).until(
+                    ExpectedConditions.textToBePresentInElement(element, text));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    protected byte[] takeScreenshot() {
+        return ((org.openqa.selenium.TakesScreenshot) driver).getScreenshotAs(org.openqa.selenium.OutputType.BYTES);
+    }
+
+    protected String getCurrentUrl() {
+        return driver.getCurrentUrl();
+    }
+
+    protected void refreshPage() {
+        driver.navigate().refresh();
+    }
+
+    protected boolean waitForInvisibility(WebElement element, int seconds) {
+        try {
+            return new WebDriverWait(driver, Duration.ofSeconds(seconds)).until(ExpectedConditions.invisibilityOf(element));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    protected int getSize(java.util.List<WebElement> elements) {
+        return elements == null ? 0 : elements.size();
     }
 }
