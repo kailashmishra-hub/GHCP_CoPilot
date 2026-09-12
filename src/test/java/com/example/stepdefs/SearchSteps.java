@@ -23,6 +23,7 @@ public class SearchSteps {
     public void i_search_for(String term) {
         searchPage.enterSearchTerm(term);
         searchPage.clickSearch();
+        searchPage.enterSearchTerm("mnmnmnmnmnm");
     }
 
     @Then("I should see results related to {string}")
