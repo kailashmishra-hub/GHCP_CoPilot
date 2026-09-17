@@ -24,6 +24,8 @@ public class SearchSteps {
         searchPage.enterSearchTerm(term);
         searchPage.clickSearch();
         searchPage.enterSearchTerm("mnmnmnmnmnm");
+        searchPage.enterSearchTerm("hh");
+
     }
 
     @Then("I should see results related to {string}")
