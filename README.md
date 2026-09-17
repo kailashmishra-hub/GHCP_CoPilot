@@ -2,20 +2,32 @@ GHCP - Cucumber BDD Automation Framework (sample)
 
 Automatic pre-push impact analysis
 ----------------------------------
-This repository includes a tracked Git pre-push hook and a GitHub Copilot custom
+This repository includes a tracked Git pre-push hook and a local Python impact
 agent. Enable the hook once in each clone:
 
     git config core.hooksPath .githooks
 
 After that, every `git push` refreshes the default remote branch, compares the
-current branch with its merge base, writes `runtime/changed-class-files.txt`, and
-invokes the `impact-tracker` agent. The agent writes:
+current branch with Master/main, and runs `impact_agent.py`. The agent writes:
 
+- `runtime/changed-class-files.txt`
 - `runtime/impacted-scenarios.txt`
 - `runtime/impacted-tags.txt`
+- `runtime/selected-scenarios.txt`
+- `runtime/impact-report.json`
+- `runtime/impact-summary.txt`
 
-Prerequisites are Git, JDK (`javac` and `java`), and an installed and authenticated
-GitHub Copilot CLI (`copilot`). If analysis fails, the push is cancelled.
+Prerequisites are Git and Python. If analysis fails, the push is cancelled.
+
+Run the impact agent manually without Streamlit:
+
+    python impact_agent.py
+
+Useful options:
+
+    python impact_agent.py --base origin/master
+    python impact_agent.py --committed-only
+    python impact_agent.py --run-tests
 
 Streamlit impact dashboard
 --------------------------

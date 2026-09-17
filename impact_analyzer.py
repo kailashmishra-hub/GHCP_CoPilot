@@ -110,6 +110,19 @@ def validate_repo(repo: Path) -> Path:
     return Path(top).resolve()
 
 
+def available_refs(repo: Path) -> list[str]:
+    output = run_git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes")
+    return sorted({line.strip() for line in output.splitlines() if line.strip()})
+
+
+def default_base(repo: Path) -> str:
+    refs = set(available_refs(repo))
+    for ref in ("origin/master", "master", "origin/main", "main"):
+        if ref in refs:
+            return ref
+    raise RuntimeError("No master/main ref found. Pass --base explicitly.")
+
+
 def parse_pull_request_url(value: str) -> tuple[str, str, int] | None:
     parsed = urlparse(value.strip())
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
